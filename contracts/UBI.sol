@@ -69,8 +69,15 @@ contract UBI is Initializable {
 
   mapping (address => mapping (address => uint256)) public allowance;
 
-  /// @dev A lower bound of the total supply. Does not take into account tokens minted as UBI by an address before it moves those (transfer or burn).
-  uint256 public totalSupply;
+  /**@dev M0 supply marker
+  * M0 should be updated after..
+  * a) adding new PoH
+  * b) revoking active PoH
+  *
+  * If accrued per sec rate is changed,
+  * It'll fluctuate +- "real" total supply
+  */
+  uint256 public totalSupply; // Solidity upgrade didn't allow name change.
 
   /// @dev Name of the token.
   string public name;
@@ -92,6 +99,20 @@ contract UBI is Initializable {
 
   /// @dev Timestamp since human started accruing.
   mapping(address => uint256) public accruedSince;
+
+  /// @dev Number of active Humans accruing UBI, Updated after adding / revoking PoH
+  uint256 public activeVerifiedHumans;
+
+  /// @dev Timestamp of last M0 update
+  uint256 public lastSupplyUpdate; // same as accruedSince but for M0 supply
+
+  /**@dev Total Supply of UBI
+  * @notice
+  */
+  function realTotalSupply() public view returns(uint){
+    // NOT using SafeMath for internal is OK?
+    return totalSupply + ((block.timestamp - lastSupplyUpdate) * (activeVerifiedHumans * accruedPerSecond));
+  }
 
   struct StreamInfo {
     uint256 streamedSince;
@@ -143,6 +164,9 @@ contract UBI is Initializable {
     require(proofOfHumanity.isRegistered(_human), "The submission is not registered in Proof Of Humanity.");
     require(accruedSince[_human] == 0, "The submission is already accruing UBI.");
     accruedSince[_human] = block.timestamp;
+    totalSupply = totalSupply.add(activeVerifiedHumans.mul(accruedPerSecond).mul(block.timestamp.sub(lastSupplyUpdate)));
+    activeVerifiedHumans++;
+    lastSupplyUpdate = block.timestamp;
   }
 
   /** @dev Allows anyone to report a submission that
@@ -175,8 +199,10 @@ contract UBI is Initializable {
     _slash = _slash.add(accruedPerSecond.sub(humanInfo.totalOutgoing).mul(block.timestamp.sub(accruedSince[_human])));
     accruedSince[_human] = 0;
     humanInfo.totalOutgoing = 0;
-    totalSupply = totalSupply.add(_slash);
     balance[msg.sender] = balance[msg.sender].add(_slash); // reward msg sender
+    totalSupply = totalSupply.add(activeVerifiedHumans.mul(accruedPerSecond).mul(block.timestamp.sub(lastSupplyUpdate)));
+    activeVerifiedHumans--;
+    lastSupplyUpdate = block.timestamp;
   }
 
   /** @dev Changes `governor` to `_governor`.
@@ -208,7 +234,6 @@ contract UBI is Initializable {
       _accrued = _accrued.add(senderInfo.totalIncoming.mul(block.timestamp.sub(senderInfo.streamedSince)));
       senderInfo.streamedSince = block.timestamp;
     }
-    totalSupply = totalSupply.add(_accrued);
     balance[msg.sender] = balance[msg.sender].add(_accrued).sub(_amount, "ERC20: transfer amount exceeds balance");
     balance[_recipient] = balance[_recipient].add(_amount);
     emit Transfer(msg.sender, _recipient, _amount);
@@ -234,7 +259,6 @@ contract UBI is Initializable {
       _accrued = _accrued.add(senderInfo.totalIncoming.mul(block.timestamp.sub(senderInfo.streamedSince)));
       senderInfo.streamedSince = block.timestamp;
     }
-    totalSupply = totalSupply.add(_accrued);
     balance[_sender] = balance[_sender].add(_accrued).sub(_amount, "ERC20: transfer amount exceeds balance");
     balance[_recipient] += _amount;
     emit Transfer(_sender, _recipient, _amount);
@@ -288,7 +312,7 @@ contract UBI is Initializable {
       senderInfo.streamedSince = block.timestamp;
     }
     balance[msg.sender] = (balance[msg.sender].add(_accrued)).sub(_amount, "ERC20: Burn amount exceeds balance");
-    totalSupply = totalSupply.add(_accrued).sub(_amount);
+    totalSupply = totalSupply.sub(_amount);
     emit Transfer(msg.sender, address(0), _amount);
   }
 
@@ -319,7 +343,7 @@ contract UBI is Initializable {
       _streamInfo.streamedSince = block.timestamp;
     }
     balance[_account] = balance[_account].add(_accrued).sub(_amount, "ERC20: Burn amount exceeds balance");
-    totalSupply = totalSupply.add(_accrued).sub(_amount);
+    totalSupply = totalSupply.sub(_amount);
     emit Transfer(_account, address(0), _amount);
   }
 
@@ -397,7 +421,6 @@ contract UBI is Initializable {
     dstInfo.streamedSince = block.timestamp; // update dst timer
     uint256 senderAccrued = accruedPerSecond.sub(senderInfo.totalOutgoing).mul(block.timestamp.sub(accruedSince[msg.sender]));
     balance[msg.sender] = balance[msg.sender].add(senderAccrued);
-    totalSupply = totalSupply.add(dstAccrued.add(senderAccrued));
     accruedSince[msg.sender] = block.timestamp; // update src timer
     streamInfo[msg.sender].outgoingRecipients.push(_dst);
     streamInfo[msg.sender].streams[_dst] = _drip;
@@ -427,7 +450,6 @@ contract UBI is Initializable {
     dstInfo.streamedSince = block.timestamp; // update dst timer
     uint256 senderAccrued = accruedPerSecond.sub(senderInfo.totalOutgoing).mul(block.timestamp.sub(accruedSince[msg.sender]));
     balance[msg.sender] = balance[msg.sender].add(senderAccrued);
-    totalSupply = totalSupply.add(dstAccrued.add(senderAccrued));
     accruedSince[msg.sender] = block.timestamp;
     uint256 _drip = senderInfo.streams[_dst];
     if ((senderInfo.outgoingRecipients.length > 1) && (dstIndex + 1 < senderInfo.outgoingRecipients.length)){
